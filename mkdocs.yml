@@ -1,0 +1,14 @@
+site_name: KGD JAX
+site_description: "JAX-based, matrix-free implementation of KGD core algorithms"
+site_author: "KGD_JAX contributors"
+
+repo_url: ""
+
+theme:
+  name: mkdocs
+
+nav:
+  - Home: index.md
+  - Usage:
+      - "Command Line Interface": usage.md
+

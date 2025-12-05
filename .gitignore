@@ -1,0 +1,63 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+*.dylib
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.cache/
+*.coverage
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+.vscode/
+
+# Simulation + analysis outputs (keep repo code-only)
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+*.bmp
+*.tiff
+*.gif
+
+*.csv
+*.tsv
+*.tab
+!tests/data/golden/*.csv
+!tests/data/golden/*.tsv
+!tests/data/golden/*.tab
+*.parquet
+*.feather
+*.npy
+*.npz
+
+# Common prefixes for generated data
+sim_*
+toy_*
+SampleStats*.csv
+seqID.csv
+test_ra_store.kgd.zarr/
+
+# General result directories
+results/
+plots/
+output/
+reports/
+figures/
+
+# Large array stores anywhere in the tree
+*.kgd.zarr/
+*.kgd.zarr

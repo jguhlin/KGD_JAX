@@ -1,0 +1,36 @@
+[workspace]
+authors = ["Joseph Guhlin <joseph.guhlin@gmail.com>"]
+channels = ["conda-forge"]
+name = "KGD_JAX"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[dependencies]
+python = "3.12.*"
+uv = ">=0.9.15,<0.10"
+pip = ">=25.3,<26"
+
+[pypi-dependencies]
+jax = { version = ">=0.8.1, <0.9", extras = ["cuda12"] }
+equinox = ">=0.13.2, <0.14"
+optimistix = ">=0.0.11, <0.0.12"
+optuna = ">=4.6.0, <5"
+pyarrow = ">=22.0.0, <23"
+polars = ">=1.35.2, <2"
+pandas = ">=2.3.3, <3"
+matplotlib = ">=3.10.7, <4"
+mkdocs = ">=1.6.0, <2"
+zarr = ">=2.18.0, <3"
+numcodecs = ">=0.13.0, <0.14"
+
+[tasks.kgd-jax]
+cmd = "python -m kgd_jax"
+
+[tasks.test]
+cmd = "python -m unittest discover"
+
+[tasks.docs-serve]
+cmd = "mkdocs serve -a 0.0.0.0:8000"
+
+[tasks.docs-build]
+cmd = "mkdocs build"
