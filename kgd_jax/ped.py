@@ -213,8 +213,11 @@ def mismatch_par_comb(
         depth_par_usnp = depth_par[:, usnp]
         expmm[np.isnan(pj) | (depth_par_usnp < mindepth_mm)] = np.nan
 
+        valid = np.sum(np.isfinite(expmm), axis=1)
+        exp_mmrate = np.full(n_par, np.nan, dtype=float)
         with np.errstate(invalid="ignore"):
-            exp_mmrate = np.nanmean(expmm, axis=1)
+            if np.any(valid > 0):
+                exp_mmrate[valid > 0] = np.nanmean(expmm[valid > 0], axis=1)
 
         mmrate[io, :] = nmismatch / np.where(ncmp == 0, np.nan, ncmp)
         ncompare[io, :] = ncmp
@@ -377,8 +380,9 @@ def mismatch_two_parents(
                 with np.errstate(divide="ignore", invalid="ignore"):
                     expmm[ug] = num / den
 
-        with np.errstate(invalid="ignore"):
-            exp_mmrate[io] = float(np.nanmean(expmm))
+        if np.any(np.isfinite(expmm)):
+            with np.errstate(invalid="ignore"):
+                exp_mmrate[io] = float(np.nanmean(expmm))
 
         # Observed mismatches.
         mismatch_mask = (np.abs(pi - pj) == 1.0) | (np.abs(pi - pk) == 1.0) | (
@@ -495,6 +499,8 @@ def best_parents_by_emm(
     EMM = mm.mmrate - mm.exp_mmrate  # shape (n_off, n_par)
 
     # Best parents are those with minimal EMM per offspring.
+    if not np.any(np.isfinite(EMM)):
+        raise ValueError("best_parents_by_emm requires at least one finite EMM value.")
     best_pos = np.nanargmin(EMM, axis=1)
     # Mask best and re-compute second best.
     EMM_temp = EMM.copy()

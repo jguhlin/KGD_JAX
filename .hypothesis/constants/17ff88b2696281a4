@@ -1,0 +1,4 @@
+# file: /weka/users/guhjo98p/KGD_JAX/kgd_jax/sim.py
+# hypothesis_version: 6.148.8
+
+[0.05, 0.5, ',', '1', 'CHROM', 'ID', 'POS', 'w']

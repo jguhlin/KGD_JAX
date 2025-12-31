@@ -1,0 +1,4 @@
+# file: /weka/users/guhjo98p/KGD_JAX/kgd_jax/plots.py
+# hypothesis_version: 6.148.8
+
+[0.0, 0.8, 150, '--', 'DAPC scatter', 'Fst', 'Fst Manhattan plot', 'Genomic position', 'HWdis', 'LD1', 'LD2', 'chrom', 'grey', 'maf', 'pop', 'population', 'pos', 'small', 'tab10', 'tab20', 'x-small']

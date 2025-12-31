@@ -1,0 +1,4 @@
+# file: /weka/users/guhjo98p/KGD_JAX/kgd_jax/ped.py
+# hypothesis_version: 6.148.8
+
+[0.0, 0.01, 0.4, 0.5, 1.0, 2.0, 4.0, ', ', 'FatherEMM', 'FatherID', 'FatherInb', 'FatherMatch', 'FatherRel', 'Inb', 'IndivID', 'MotherEMM', 'MotherID', 'MotherInb', 'MotherMatch', 'MotherRel', 'ignore', 'seqID']

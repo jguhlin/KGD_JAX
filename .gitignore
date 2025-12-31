@@ -61,3 +61,4 @@ figures/
 # Large array stores anywhere in the tree
 *.kgd.zarr/
 *.kgd.zarr
+.graphrag

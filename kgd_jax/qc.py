@@ -97,9 +97,14 @@ def run_qc(
     while changed:
         changed = False
 
+        if not keep_ind.any() or not keep_snp.any():
+            break
+
         ref_sub = ref[keep_ind][:, keep_snp]
         alt_sub = alt[keep_ind][:, keep_snp]
         depth_sub = ref_sub + alt_sub
+        if ref_sub.shape[0] == 0 or ref_sub.shape[1] == 0:
+            break
 
         # Sample QC
         sampdepth_max = depth_sub.max(axis=1)
@@ -130,14 +135,19 @@ def run_qc(
             keep_snp[drop_idx] = False
 
     # Final depth / genotypes / p on kept entries.
-    ref_final = ref[keep_ind][:, keep_snp]
-    alt_final = alt[keep_ind][:, keep_snp]
-    depth_final_np, genon_final_np = alleles_to_depth_genon(ref_final, alt_final)
-
-    if pmethod.upper() == "A":
-        p_final_np = calcp_alleles(ref_final, alt_final)
+    if not keep_ind.any() or not keep_snp.any():
+        depth_final_np = np.zeros((keep_ind.sum(), keep_snp.sum()), dtype=np.float32)
+        genon_final_np = np.full_like(depth_final_np, np.nan, dtype=np.float32)
+        p_final_np = np.full((keep_snp.sum(),), np.nan, dtype=np.float32)
     else:
-        p_final_np = calcp_genotypes(genon_final_np)
+        ref_final = ref[keep_ind][:, keep_snp]
+        alt_final = alt[keep_ind][:, keep_snp]
+        depth_final_np, genon_final_np = alleles_to_depth_genon(ref_final, alt_final)
+
+        if pmethod.upper() == "A":
+            p_final_np = calcp_alleles(ref_final, alt_final)
+        else:
+            p_final_np = calcp_genotypes(genon_final_np)
 
     depth_jax = jnp.asarray(depth_final_np, dtype=jnp.float32)
     genon_jax = jnp.asarray(genon_final_np, dtype=jnp.float32)

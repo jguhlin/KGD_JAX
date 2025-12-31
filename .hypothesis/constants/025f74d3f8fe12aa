@@ -1,0 +1,4 @@
+# file: /weka/users/guhjo98p/KGD_JAX/kgd_jax/qc.py
+# hypothesis_version: 6.148.8
+
+[1e-09, 0.01, 1.0, 2.0, 'A', 'ignore']

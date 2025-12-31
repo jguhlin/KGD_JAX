@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import os
 import unittest
+
+os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
 import numpy as np
 import pandas as pd
 
 from kgd_jax import grm, io, qc, sim, popgen
+from tests.jax_preflight import assert_cpu_backend
+
+assert_cpu_backend()
 
 
 _SIM_PARAMS = dict(n_ind=1000, n_snp=5000, seed=123, maf_min=0.05, maf_max=0.5, depth=20)

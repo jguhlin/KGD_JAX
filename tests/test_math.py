@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import os
 import unittest
+
+os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
+
 import numpy as np
 
 from kgd_jax import grm
+from tests.jax_preflight import assert_cpu_backend
+
+assert_cpu_backend()
 
 
 class TestDepth2K(unittest.TestCase):

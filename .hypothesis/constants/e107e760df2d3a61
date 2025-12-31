@@ -1,0 +1,4 @@
+# file: /weka/users/guhjo98p/KGD_JAX/kgd_jax/popgen.py
+# hypothesis_version: 6.148.8
+
+[0.0, 1e-08, 0.001, 0.5, 1.0, 2.0, 90.0, 100.0, 100, 'A', 'Fst', 'G', 'Inb', 'Neauto', 'Neauto_adj_b1', 'Neauto_adj_b2', 'Neauto_med', 'Neauto_med_adj_b1', 'Neauto_med_adj_b2', 'center', 'centre', 'even', 'ignore', 'ij', 'mean', 'median', 'n', 'nan', 'popnames', 'random']

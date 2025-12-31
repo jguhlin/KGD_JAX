@@ -222,6 +222,8 @@ def fst_gbs(
 
     # Global allele freq per SNP using genotypes.
     mask_g = ~np.isnan(genon)
+    if not np.any(mask_g):
+        raise ValueError("fst_gbs requires at least one non-NaN genotype.")
     pgsub = np.nansum(genon, axis=0) / (2.0 * mask_g.sum(axis=0))
 
     # SNPs usable for Fst.
@@ -402,11 +404,15 @@ def hw_pops(
 
         with np.errstate(divide="ignore", invalid="ignore"):
             ratio = osnphetstar / esnphetstar
+        ratio[~np.isfinite(ratio)] = np.nan
         one_minus_ratio = 1.0 - ratio
 
         with np.errstate(invalid="ignore"):
             sum_1_minus_2K = np.nansum(1.0 - 2.0 * Kdepth, axis=0)
-        x2s = sum_1_minus_2K * one_minus_ratio**2
+        x2s = np.full_like(sum_1_minus_2K, np.nan, dtype=np.float64)
+        valid = np.isfinite(sum_1_minus_2K) & np.isfinite(one_minus_ratio)
+        if np.any(valid):
+            x2s[valid] = sum_1_minus_2K[valid] * (one_minus_ratio[valid] ** 2)
         x2star[ipop, :] = x2s
         l10pstar[ipop, :] = chisq_l10p(x2s, df=1)
 
@@ -545,6 +551,8 @@ def fst_pairwise(
       - 'popnames': list of population names in order.
     """
     populations = np.asarray(populations)
+    if not np.any(~np.isnan(genon)):
+        raise ValueError("fst_pairwise requires at least one non-NaN genotype.")
     popnames = np.unique(populations)
     npops = len(popnames)
 
@@ -565,8 +573,10 @@ def fst_pairwise(
                 varadj=varadj,
             )
             Fst_cube[i, j, :] = fst_res.fst
-            Fst_mean[i, j] = np.nanmean(fst_res.fst)
-            Fst_median[i, j] = np.nanmedian(fst_res.fst)
+            finite = np.isfinite(fst_res.fst)
+            if np.any(finite):
+                Fst_mean[i, j] = np.nanmean(fst_res.fst[finite])
+                Fst_median[i, j] = np.nanmedian(fst_res.fst[finite])
 
     return {
         "Fst": Fst_cube,
@@ -642,12 +652,14 @@ def popG(
     popSelf = W.T @ diagG
 
     if not diag:
-        # Adjust diagonal of popG to exclude self-rel.
-        diag_vals = np.diag(popG_mat)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            new_diag = (diag_vals * npops - popSelf) / (npops - 1.0)
+        # Adjust diagonal of popG to exclude self-rel when population size > 1.
         popG_mat = popG_mat.copy()
-        np.fill_diagonal(popG_mat, new_diag)
+        for i, n_pop in enumerate(npops):
+            if n_pop <= 1:
+                continue
+            diag_val = popG_mat[i, i]
+            new_diag = (diag_val * n_pop - popSelf[i]) / (n_pop - 1.0)
+            popG_mat[i, i] = new_diag
 
     inb = popSelf[:, None] - 1.0
 
@@ -687,19 +699,27 @@ def Nefromr2(
 
     meanN = float(np.mean(nLD))
 
-    r2_mean = wmean(r2auto, wt)
-    Neauto = (1.0 / r2_mean - 1.0) / 2.0
-    beta = 1.0
-    Neauto_adj_b1 = (1.0 / (r2_mean - 1.0 / (beta * meanN)) - alpha) / 2.0
-    beta = 2.0
-    Neauto_adj_b2 = (1.0 / (r2_mean - 1.0 / (beta * meanN)) - alpha) / 2.0
+    def _safe_ne_adj(r2_val: float, beta: float) -> float:
+        denom = r2_val - 1.0 / (beta * meanN)
+        if denom <= 0.0 or not np.isfinite(denom):
+            return float("nan")
+        return float((1.0 / denom - alpha) / 2.0)
+
+    r2_mean = float(wmean(r2auto, wt))
+    if r2_mean <= 0.0 or not np.isfinite(r2_mean):
+        Neauto = float("nan")
+    else:
+        Neauto = float((1.0 / r2_mean - 1.0) / 2.0)
+    Neauto_adj_b1 = _safe_ne_adj(r2_mean, beta=1.0)
+    Neauto_adj_b2 = _safe_ne_adj(r2_mean, beta=2.0)
 
     med = float(np.median(r2auto))
-    Neauto_med = (1.0 / med - 1.0) / 2.0
-    beta = 1.0
-    Neauto_med_adj_b1 = (1.0 / (med - 1.0 / (beta * meanN)) - alpha) / 2.0
-    beta = 2.0
-    Neauto_med_adj_b2 = (1.0 / (med - 1.0 / (beta * meanN)) - alpha) / 2.0
+    if med <= 0.0 or not np.isfinite(med):
+        Neauto_med = float("nan")
+    else:
+        Neauto_med = float((1.0 / med - 1.0) / 2.0)
+    Neauto_med_adj_b1 = _safe_ne_adj(med, beta=1.0)
+    Neauto_med_adj_b2 = _safe_ne_adj(med, beta=2.0)
 
     return {
         "n": meanN,

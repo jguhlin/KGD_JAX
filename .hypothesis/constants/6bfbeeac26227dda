@@ -1,0 +1,4 @@
+# file: /weka/users/guhjo98p/KGD_JAX/kgd_jax/io.py
+# hypothesis_version: 6.148.8
+
+[1024, 4096, ',', 'U', 'alt', 'chrom', 'int32', 'pos', 'r', 'ref', 'sample_ids', 'w']

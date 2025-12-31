@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import os
 import unittest
 
+os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
+
+import jax
 import jax.numpy as jnp
 import numpy as np
 
 from kgd_jax import grm, io, popgen, qc, tuning
+from tests.jax_preflight import assert_cpu_backend
+
+assert_cpu_backend()
 
 
 class TestQCAndGRM(unittest.TestCase):

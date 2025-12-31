@@ -22,12 +22,13 @@ matplotlib = ">=3.10.7, <4"
 mkdocs = ">=1.6.0, <2"
 zarr = ">=2.18.0, <3"
 numcodecs = ">=0.13.0, <0.14"
+hypothesis = ">=6.148.8, <7"
 
 [tasks.kgd-jax]
 cmd = "python -m kgd_jax"
 
 [tasks.test]
-cmd = "python -m unittest discover"
+cmd = "JAX_PLATFORM_NAME=cpu JAX_PLATFORMS=cpu XLA_PYTHON_CLIENT_PREALLOCATE=false python -m unittest discover"
 
 [tasks.docs-serve]
 cmd = "mkdocs serve -a 0.0.0.0:8000"
