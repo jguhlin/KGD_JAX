@@ -6,6 +6,8 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
+import jax
+import jax.numpy as jnp
 
 from . import grm, io, popgen, ped, plots, merge, tuning, sim, qc
 
@@ -75,7 +77,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "without forming the full GRM."
         ),
     )
-    block.add_argument("ra_tab", type=Path, help="Input KGD .ra.tab file")
+    block.add_argument("ra_tab", type=Path, nargs="?", help="Input KGD .ra.tab file (optional if --store or --lazy-sim used)")
+    block.add_argument("--store", type=Path, help="Input KGD-JAX Zarr store")
+    block.add_argument("--lazy-sim", nargs=2, type=int, metavar=("N_IND", "N_SNP"), 
+                       help="Run in lazy simulation mode.")
     block.add_argument(
         "--samples",
         type=str,
@@ -674,6 +679,74 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Keep the intermediate .ra.tab produced by vcf2ra.py (default: delete).",
     )
 
+    # Lazy/Streaming G5 diagonal.
+    ldiag = sub.add_parser(
+        "lazy-diag",
+        help="Compute G5 diagonal using streaming to handle very large datasets.",
+    )
+    ldiag.add_argument("--ra-tab", type=Path, help="Input KGD .ra.tab file")
+    ldiag.add_argument("--store", type=Path, help="Input KGD-JAX Zarr store")
+    ldiag.add_argument("--lazy-sim", nargs=2, type=int, metavar=("N_IND", "N_SNP"), 
+                       help="Run in lazy simulation mode with N_IND individuals and N_SNP SNPs.")
+    ldiag.add_argument(
+        "--chunk-size",
+        type=int,
+        default=2000,
+        help="Number of SNPs per streaming chunk (default: 2000).",
+    )
+    ldiag.add_argument(
+        "--depth-model",
+        choices=["bb", "modp"],
+        default="bb",
+        help="Depth-to-K model (default: bb).",
+    )
+    ldiag.add_argument(
+        "--depth-param",
+        type=float,
+        default=None,
+        help="Parameter for depth model.",
+    )
+    ldiag.add_argument(
+        "--out",
+        type=Path,
+        required=False,
+        help="Output CSV with columns: sample_id, G5_diag.",
+    )
+    ldiag.add_argument(
+        "--no-output",
+        action="store_true",
+        help="Skip writing output file (for benchmarking).",
+    )
+    ldiag.add_argument(
+        "--dtype",
+        choices=["float32", "float16", "bfloat16"],
+        default="float32",
+        help="Precision for chunk processing (default: float32). Use float16 to reduce VRAM.",
+    )
+    ldiag.add_argument(
+        "--output-sums",
+        action="store_true",
+        help="Output partial sums (num, den) instead of G5 diagonal. Useful for parallelizing over chromosomes.",
+    )
+
+    # Merge partial G5 sums (Map-Reduce step).
+    mdiag = sub.add_parser(
+        "merge-diag",
+        help="Merge partial G5 sums produced by lazy-diag --output-sums.",
+    )
+    mdiag.add_argument(
+        "partials",
+        type=Path,
+        nargs="+",
+        help="List of partial sum CSV files.",
+    )
+    mdiag.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output CSV with merged G5 diagonal.",
+    )
+
     # Best-parent search across all candidates (simplified bestmatch analogue).
     pedbest = sub.add_parser(
         "ped-best",
@@ -900,8 +973,28 @@ def cmd_diag(args: argparse.Namespace) -> None:
 
 
 def cmd_block(args: argparse.Namespace) -> None:
-    ra = io.read_ra_tab(args.ra_tab)
-
+    # Support Lazy/Streaming inputs for block calculation
+    if hasattr(args, 'lazy_sim') and args.lazy_sim:
+        n_ind, n_snp = args.lazy_sim
+        ra = io.create_lazy_simulation(n_ind, n_snp)
+        # No global QC for lazy sim
+        depth_j = None 
+        genon_j = None
+        p_j = None
+    elif hasattr(args, 'store') and args.store:
+        ra = io.create_lazy_ra_store(args.store)
+        depth_j = None
+        genon_j = None
+        p_j = None
+    else:
+        # Classic path
+        ra = io.read_ra_tab(args.ra_tab)
+        # Run QC globally
+        qc_result = qc.run_qc(ra, pmethod=args.pmethod)
+        depth_j = qc_result.depth
+        genon_j = qc_result.genon
+        p_j = qc_result.p
+    
     # Map requested sample IDs to indices.
     sample_to_idx = {sid: i for i, sid in enumerate(ra.sample_ids)}
     try:
@@ -910,35 +1003,106 @@ def cmd_block(args: argparse.Namespace) -> None:
         missing = str(e.args[0])
         raise SystemExit(f"Sample ID '{missing}' not found in RA header") from e
 
-    # Run QC globally, then restrict to the requested subset.
-    qc_result = qc.run_qc(ra, pmethod=args.pmethod)
-    op = grm.build_grm_operator(
-        depth=qc_result.depth,
-        genon=qc_result.genon,
-        p=qc_result.p,
-        dmodel=args.depth_model,
-        dparam=args.depth_param,
-    )
+    # If using full in-memory RA (classic)
+    if depth_j is not None:
+         # Translate original indices to post-QC indices.
+        kept_indices = np.where(qc_result.keep_ind)[0]
+        idx_post = []
+        for i in idx:
+            pos = np.where(kept_indices == i)[0]
+            if len(pos) == 0:
+                raise SystemExit(
+                    f"Sample '{ra.sample_ids[i]}' was removed during QC; "
+                    "relax thresholds or choose another sample."
+                )
+            idx_post.append(int(pos[0]))
+        
+        op = grm.build_grm_operator(
+            depth=depth_j,
+            genon=genon_j,
+            p=p_j,
+            dmodel=args.depth_model,
+            dparam=args.depth_param,
+        )
+        G4_block = op.submatrix_G4(ind_i=idx_post)
+        labels = [ra.sample_ids[i] for i in np.array(kept_indices)[idx_post]]
 
-    # Translate original indices to post-QC indices.
-    kept_indices = np.where(qc_result.keep_ind)[0]
-    idx_post = []
-    for i in idx:
-        pos = np.where(kept_indices == i)[0]
-        if len(pos) == 0:
-            raise SystemExit(
-                f"Sample '{ra.sample_ids[i]}' was removed during QC; "
-                "relax thresholds or choose another sample."
-            )
-        idx_post.append(int(pos[0]))
+    else:
+        # Lazy/Streaming path
+        n_req = len(idx)
+        n_snp = ra.n_snp
+        chunk_size = 5000 # default
+        
+        N_mat = jnp.zeros((n_req, n_req), dtype=jnp.float32)
+        div0a_i = jnp.zeros(n_req, dtype=jnp.float32) 
+        
+        print(f"Streaming block for {n_req} samples over {n_snp} SNPs...")
+        depth2K_fn = grm.make_depth2K(dmodel=args.depth_model, param=args.depth_param)
+        
+        for i_chunk in range(0, n_snp, chunk_size):
+            end = min(i_chunk + chunk_size, n_snp)
+            
+            ref_sub, alt_sub = _get_chunk_subset(ra, i_chunk, end, idx)
+            
+            # QC / P-calc
+            p_chunk = qc.calcp_alleles(ref_sub, alt_sub) 
+            
+            depth_sub, genon_sub = qc.alleles_to_depth_genon(ref_sub, alt_sub)
+            
+            depth_j = jnp.asarray(depth_sub)
+            genon_j = jnp.asarray(genon_sub)
+            p_j = jnp.asarray(p_chunk)
+            
+            # Center and Mask
+            P0 = p_j
+            P1 = 1.0 - p_j
+            P0_b = P0[None, :]
+            
+            # G centered, missing replaced with 0
+            usegeno = ~jnp.isnan(genon_j)
+            G_cent = jnp.where(usegeno, genon_j - 2.0 * P0_b, 0.0)
+            
+            if jnp.isnan(G_cent).any():
+                print(f"Warning: G_cent has NaNs at chunk {i_chunk}")
+            
+            # Numerator update
+            N_mat += G_cent @ G_cent.T
+            
+            if jnp.isnan(N_mat).any():
+                print(f"Warning: N_mat became NaN at chunk {i_chunk}")
+                # Check inputs
+                print(f"  genon_j nan count: {jnp.isnan(genon_j).sum()}")
+                print(f"  p_j nan count: {jnp.isnan(p_j).sum()}")
+                break
+            
+            # Denominator update
+            dq = 2.0 * P0 * P1
+            div0a_i += jnp.sum(dq) 
+            
+        D_val = div0a_i[0] 
+        print(f"Debug: D_val={D_val}, N_mat_mean={jnp.mean(N_mat)}")
+        G4_block = N_mat / D_val
+        labels = args.samples
+            
+            
 
-    G4_block = op.submatrix_G4(ind_i=idx_post)
     block_np = np.asarray(G4_block, dtype=np.float64)
-    labels = [ra.sample_ids[i] for i in np.array(kept_indices)[idx_post]]
-
     out_df = pd.DataFrame(block_np, index=labels, columns=labels)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     out_df.to_csv(args.out)
+
+
+def _get_chunk_subset(ra, start_snp, end_snp, ind_indices):
+    """Helper to get specific rows from RA source."""
+    ref_list = []
+    alt_list = []
+    
+    for idx in ind_indices:
+        r, a = ra.get_chunk(start_snp, end_snp, start_ind=idx, end_ind=idx+1)
+        ref_list.append(r)
+        alt_list.append(a)
+        
+    return np.concatenate(ref_list, axis=0), np.concatenate(alt_list, axis=0)
 
 
 def cmd_het(args: argparse.Namespace) -> None:
@@ -1681,12 +1845,128 @@ def cmd_inbreed(args: argparse.Namespace) -> None:
     out_df.to_csv(args.out, index=False)
 
 
+def cmd_lazy_diag(args: argparse.Namespace) -> None:
+    if args.lazy_sim:
+        n_ind, n_snp = args.lazy_sim
+        ra_lazy = io.create_lazy_simulation(n_ind, n_snp)
+    elif args.store:
+        ra_lazy = io.create_lazy_ra_store(args.store)
+    elif args.ra_tab:
+        # We don't have a lazy RA tab reader yet, load fully for now
+        # or we could implement a line-by-line reader.
+        ra = io.read_ra_tab(args.ra_tab)
+        ra_lazy = io.LazyRAData(ra.sample_ids, ra.chrom, ra.pos, ra.ref, ra.alt)
+    else:
+        raise SystemExit("Must provide --store, --ra-tab, or --lazy-sim")
+
+    # Set up JAX precision
+    dtype_map = {"float32": jnp.float32, "float16": jnp.float16, "bfloat16": jnp.bfloat16}
+    calc_dtype = dtype_map[args.dtype]
+    
+    depth2K_fn = grm.make_depth2K(dmodel=args.depth_model, param=args.depth_param)
+    
+    n_ind = ra_lazy.n_ind
+    n_snp = ra_lazy.n_snp
+    chunk_size = args.chunk_size
+    n_chunks = (n_snp + chunk_size - 1) // chunk_size
+    
+    # Accumulators must be float32 to avoid overflow/precision loss during sum
+    total_num = jnp.zeros(n_ind, dtype=jnp.float32)
+    total_div = jnp.zeros(n_ind, dtype=jnp.float32)
+    
+    print(f"Streaming {n_ind} x {n_snp} in {n_chunks} chunks (dtype={args.dtype})...")
+    import time
+    t0 = time.time()
+    
+    for i in range(n_chunks):
+        start_snp = i * chunk_size
+        end_snp = min((i + 1) * chunk_size, n_snp)
+        
+        ref, alt = ra_lazy.get_chunk(start_snp, end_snp)
+        depth_np, genon_np = qc.alleles_to_depth_genon(ref, alt)
+        
+        # For simplicity in lazy mode, we recompute P per chunk or assume global P
+        # Here we use chunk-based P to avoid loading all data for QC
+        p_np = qc.calcp_alleles(ref, alt)
+        
+        # Cast to requested precision for memory efficiency
+        depth_j = jnp.asarray(depth_np, dtype=calc_dtype)
+        genon_j = jnp.asarray(genon_np, dtype=calc_dtype)
+        p_j = jnp.asarray(p_np, dtype=calc_dtype)
+        
+        num_c, div_c = grm.diag_G5_partial(depth_j, genon_j, p_j, depth2K_fn)
+        
+        # Cast back to float32 for accumulation
+        total_num += num_c.astype(jnp.float32)
+        total_div += div_c.astype(jnp.float32)
+        
+        if (i+1) % 5 == 0 or i == n_chunks - 1:
+            print(f"  Chunk {i+1}/{n_chunks} done...")
+
+    dt = time.time() - t0
+    print(f"Finished in {dt:.2f}s")
+
+    if not args.no_output:
+        if args.output_sums:
+            out_df = pd.DataFrame({
+                "sample_id": ra_lazy.sample_ids,
+                "num": np.asarray(total_num, dtype=np.float64),
+                "div": np.asarray(total_div, dtype=np.float64)
+            })
+        else:
+            G5d = 1.0 + total_num / total_div
+            out_df = pd.DataFrame({
+                "sample_id": ra_lazy.sample_ids, 
+                "G5_diag": np.asarray(G5d, dtype=np.float64)
+            })
+            
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            out_df.to_csv(args.out, index=False)
+        else:
+            print("No output file specified and --no-output not set. Printing first 10:")
+            print(out_df.head(10))
+
+
+def cmd_merge_diag(args: argparse.Namespace) -> None:
+    if not args.partials:
+        raise SystemExit("No partial files provided.")
+    
+    # Read first file to initialize
+    df = pd.read_csv(args.partials[0])
+    if "num" not in df.columns or "div" not in df.columns:
+        raise SystemExit(f"File {args.partials[0]} missing 'num' or 'div' columns.")
+    
+    total_num = df["num"].to_numpy(dtype=np.float64)
+    total_div = df["div"].to_numpy(dtype=np.float64)
+    sample_ids = df["sample_id"]
+    
+    # Sum rest
+    for p in args.partials[1:]:
+        df_next = pd.read_csv(p)
+        # Verify alignment
+        if not df_next["sample_id"].equals(sample_ids):
+             raise SystemExit(f"Sample ID mismatch in {p}")
+        
+        total_num += df_next["num"].to_numpy(dtype=np.float64)
+        total_div += df_next["div"].to_numpy(dtype=np.float64)
+        
+    G5d = 1.0 + total_num / total_div
+    out_df = pd.DataFrame({"sample_id": sample_ids, "G5_diag": G5d})
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    out_df.to_csv(args.out, index=False)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
     if args.command == "diag":
         cmd_diag(args)
+    elif args.command == "lazy-diag":
+        cmd_lazy_diag(args)
+    elif args.command == "merge-diag":
+        cmd_merge_diag(args)
     elif args.command == "block":
         cmd_block(args)
     elif args.command == "het":

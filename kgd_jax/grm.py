@@ -12,19 +12,19 @@ Depth2KFn = Callable[[jnp.ndarray], jnp.ndarray]
 
 def depth2K_bb(depth: jnp.ndarray, alpha: float = jnp.inf) -> jnp.ndarray:
     """K(d) under the beta-binomial model (KGD_CORE §3.2)."""
-    depth = jnp.asarray(depth, dtype=jnp.float32)
+    # Respect input dtype
     if jnp.isinf(alpha):
         return 0.5 ** depth
     from jax.scipy.special import beta as jbeta
 
-    alpha_f = jnp.float32(alpha)
+    alpha_f = jnp.array(alpha, dtype=depth.dtype)
     return jbeta(alpha_f, depth + alpha_f) / jbeta(alpha_f, alpha_f)
 
 
 def depth2K_modp(depth: jnp.ndarray, modp: float = 0.5) -> jnp.ndarray:
     """K(d) under the Markov persistence model (KGD_CORE §3.2)."""
-    depth = jnp.asarray(depth, dtype=jnp.float32)
-    modp_f = jnp.float32(modp)
+    # Respect input dtype
+    modp_f = jnp.array(modp, dtype=depth.dtype)
     K = 0.5 * modp_f ** (depth - 1.0)
     return jnp.where(depth == 0.0, 1.0, K)
 
@@ -82,38 +82,52 @@ class GRMOperator:
 
     def diag_G5(self, depth_min: float = 0.0, depth_max: float = jnp.inf) -> jnp.ndarray:
         """Compute the KGD G5 diagonal via calcGdiag (KGD_CORE §4.4)."""
-        depth = self.depth
-        genon = self.genon
-        p = self.p
-
-        if p.ndim == 1:
-            p = jnp.broadcast_to(p[None, :], depth.shape)
-
-        d4i = jnp.float32(1.001)
-
-        usegeno = ~jnp.isnan(genon)
-        if depth_min > 1.0 or depth_max < float("inf"):
-            depth_mask = (depth >= depth_min) & (depth <= depth_max)
-            usegeno = usegeno & depth_mask
-
-        genon0 = jnp.where(usegeno, genon - 2.0 * p, 0.0)
-        genon01 = jnp.where(depth >= d4i, genon0, 0.0)
-
-        P0 = jnp.where(usegeno & (depth >= d4i), p, 0.0)
-        P1 = jnp.where(usegeno & (depth >= d4i), 1.0 - p, 0.0)
-
-        div0 = 2.0 * jnp.sum(P0 * P1, axis=1)  # (n_ind,)
-
-        depth_clamped = jnp.where(depth < d4i, d4i, depth)
-        Kdepth = self.depth2K(depth_clamped)
-
-        num = jnp.sum(
-            (genon01**2 - 2.0 * P0 * P1 * (1.0 + 2.0 * Kdepth))
-            / (1.0 - 2.0 * Kdepth),
-            axis=1,
+        num, div = diag_G5_partial(
+            self.depth, self.genon, self.p, self.depth2K, depth_min, depth_max
         )
-        G5d = 1.0 + num / div0
-        return G5d
+        return 1.0 + num / div
+
+
+def diag_G5_partial(
+    depth: jnp.ndarray,
+    genon: jnp.ndarray,
+    p: jnp.ndarray,
+    depth2K: Depth2KFn,
+    depth_min: float = 0.0,
+    depth_max: float = jnp.inf,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Compute numerator and denominator terms for G5 diagonal for a chunk of SNPs."""
+    dtype = depth.dtype
+    if p.ndim == 1:
+        p = jnp.broadcast_to(p[None, :], depth.shape)
+
+    d4i = jnp.array(1.001, dtype=dtype)
+
+    usegeno = ~jnp.isnan(genon)
+    if depth_min > 1.0 or depth_max < float("inf"):
+        depth_mask = (depth >= depth_min) & (depth <= depth_max)
+        usegeno = usegeno & depth_mask
+
+    two = jnp.array(2.0, dtype=dtype)
+    one = jnp.array(1.0, dtype=dtype)
+    
+    genon0 = jnp.where(usegeno, genon - two * p, 0.0)
+    genon01 = jnp.where(depth >= d4i, genon0, 0.0)
+
+    P0 = jnp.where(usegeno & (depth >= d4i), p, 0.0)
+    P1 = jnp.where(usegeno & (depth >= d4i), one - p, 0.0)
+
+    div0 = two * jnp.sum(P0 * P1, axis=1)  # (n_ind,)
+
+    depth_clamped = jnp.where(depth < d4i, d4i, depth)
+    Kdepth = depth2K(depth_clamped)
+
+    # Ensure constants in num are also matching dtype
+    num = jnp.sum(
+        (genon01**2 - two * P0 * P1 * (one + two * Kdepth)) / (one - two * Kdepth),
+        axis=1,
+    )
+    return num, div0
 
     def submatrix_G4(
         self,

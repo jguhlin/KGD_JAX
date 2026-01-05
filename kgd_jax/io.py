@@ -11,13 +11,7 @@ import zarr
 
 @dataclass
 class RAData:
-    """Reference/alternate read counts in a matrix-free friendly layout.
-
-    Shapes follow the KGD conventions but oriented for fast JAX usage:
-    - n_ind:   number of individuals / samples
-    - n_snp:   number of SNPs
-    - ref[i,s] / alt[i,s]: read counts
-    """
+    """Reference/alternate read counts in a matrix-free friendly layout."""
 
     sample_ids: List[str]
     chrom: np.ndarray
@@ -32,6 +26,89 @@ class RAData:
     @property
     def n_snp(self) -> int:
         return int(self.ref.shape[1])
+
+
+class LazyRAData:
+    """Provider for RA data that loads/generates chunks on demand."""
+
+    def __init__(
+        self,
+        sample_ids: List[str],
+        chrom: np.ndarray,
+        pos: np.ndarray,
+        ref_provider: Any,
+        alt_provider: Any,
+    ):
+        self.sample_ids = sample_ids
+        self.chrom = chrom
+        self.pos = pos
+        self.ref_provider = ref_provider
+        self.alt_provider = alt_provider
+        self.n_ind = len(sample_ids)
+        self.n_snp = len(chrom)
+
+    def get_chunk(
+        self, start_snp: int, end_snp: int, start_ind: int = 0, end_ind: Optional[int] = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        if end_ind is None:
+            end_ind = self.n_ind
+        ref = self.ref_provider[start_ind:end_ind, start_snp:end_snp]
+        alt = self.alt_provider[start_ind:end_ind, start_snp:end_snp]
+        return np.asarray(ref), np.asarray(alt)
+
+
+def create_lazy_ra_store(store_path: str | Path) -> LazyRAData:
+    """Open a Zarr store for lazy access."""
+    store_path = Path(store_path)
+    g = zarr.open_group(store_path.as_posix(), mode="r")
+    sample_ids = [str(s) for s in np.asarray(g["sample_ids"][:])]
+    chrom = np.asarray(g["chrom"][:])
+    pos = np.asarray(g["pos"][:])
+    return LazyRAData(sample_ids, chrom, pos, g["ref"], g["alt"])
+
+
+class PRNGProvider:
+    """Deterministic PRNG provider for genotypes."""
+
+    def __init__(self, n_ind: int, n_snp: int, seed: int = 42, is_ref: bool = True):
+        self.n_ind = n_ind
+        self.n_snp = n_snp
+        self.seed = seed
+        self.is_ref = is_ref
+
+    def __getitem__(self, key: Any) -> np.ndarray:
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise ValueError("Indexing must be [ind_slice, snp_slice]")
+
+        ind_slice, snp_slice = key
+        start_ind, stop_ind, step_ind = ind_slice.indices(self.n_ind)
+        start_snp, stop_snp, step_snp = snp_slice.indices(self.n_snp)
+
+        shape = (stop_ind - start_ind, stop_snp - start_snp)
+        res = np.zeros(shape, dtype=np.int32)
+        
+        # Uniqueness per individual AND SNP.
+        # We use a combined seed for the individual+SNP block.
+        for i in range(shape[0]):
+            global_ind = start_ind + i
+            # Seed depends on individual AND start_snp to ensure determinism across chunks
+            rng = np.random.default_rng(self.seed + global_ind * 1000000 + start_snp + (1 if self.is_ref else 2))
+            res[i, :] = rng.integers(0, 21, size=shape[1])
+            
+        return res
+
+
+def create_lazy_simulation(n_ind: int, n_snp: int, seed: int = 42) -> LazyRAData:
+    sample_ids = [f"S{i}" for i in range(n_ind)]
+    chrom = np.array(["1"] * n_snp)
+    pos = np.arange(n_snp)
+    return LazyRAData(
+        sample_ids,
+        chrom,
+        pos,
+        PRNGProvider(n_ind, n_snp, seed, is_ref=True),
+        PRNGProvider(n_ind, n_snp, seed, is_ref=False),
+    )
 
 
 def read_ra_tab(path: str | Path) -> RAData:

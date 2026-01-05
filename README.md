@@ -126,6 +126,43 @@ All commands are launched with `pixi run kgd-jax <command> ...` (prefix with the
 - `vcf2kgd`: VCF → RA (via `orig_kgd/vcf2ra.py`) → Zarr. Example: `pixi run kgd-jax vcf2kgd input.vcf --store data.kgd.zarr`.
 - `run`: end-to-end QC + GRM diag + popgen outputs. Example: `pixi run kgd-jax run data.ra.tab --prefix results/run1`.
 
+## High-Performance / Large Scale
+
+KGD-JAX supports **lazy loading** and **streaming** to handle massive datasets (e.g. 1M samples) with constant memory usage.
+
+### 1) Streaming G5 Diagonal (Low VRAM)
+Process huge datasets chunk-by-chunk. Use `--dtype float16` to halve VRAM usage.
+
+```bash
+# Run on a Zarr store
+pixi run kgd-jax lazy-diag --store data.kgd.zarr --out diag.csv --dtype float16 --chunk-size 1000
+
+# Simulation: 1 Million Individuals x 100k SNPs (No disk usage)
+pixi run kgd-jax lazy-diag --lazy-sim 1000000 100000 --out diag_1m.csv --dtype float16 --chunk-size 1000
+```
+
+### 2) Map-Reduce (Parallel Processing)
+Calculate partial sums on subsets of data (e.g. per chromosome) and merge them later.
+
+```bash
+# Step 1: Compute partials (can run in parallel jobs)
+pixi run kgd-jax lazy-diag --store chr1.zarr --output-sums --out chr1_sums.csv
+pixi run kgd-jax lazy-diag --store chr2.zarr --output-sums --out chr2_sums.csv
+
+# Step 2: Merge
+pixi run kgd-jax merge-diag chr1_sums.csv chr2_sums.csv --out final_diag.csv
+```
+
+### 3) Query Random Blocks (On-Demand)
+Extract relationship matrices for specific individuals instantly, without processing the full dataset.
+
+```bash
+# Query 5 specific samples from a 1M sample simulation
+pixi run kgd-jax block --lazy-sim 1000000 100000 \
+    --samples S0 S123 S456 S789 S999999 \
+    --out small_block.csv
+```
+
 ## Tips
 
 - Keep the compressed `.kgd.zarr` under version control if it is small enough; otherwise regenerate from the source VCF/RA. The repo `.gitignore` already skips large stores by default.
